@@ -150,70 +150,125 @@ public:
   void sort(const ITape &input, ITape &output) const override {
     const size_t N = input.size();
     const size_t M = config.local_memory_limit;
+    // check if we all ok
+    if (N <= M) {
+      local_memory.resize(N);
+      tape_copy_with_sort_n(input, output, N);
+      return;
+    }
     // count of blocks in input
-    const size_t num_of_blocks = (N + M - 1) / M;
+    const size_t count_of_blocks = (N + M - 1) / M;
     // it may be in one function not log2
     const size_t K =
-        static_cast<size_t>(std::ceil(std::log2(num_of_blocks))) - 1;
+        static_cast<size_t>(std::ceil(std::log2(count_of_blocks))) - 1;
     // count of blocks on one tape
     const size_t num_of_blocks_by_additional_tape = 1 << K;
     // size of additional tapes
-    const size_t additional_tapes_size = num_of_blocks_by_additional_tape * M;
-    const size_t free_space = additional_tapes_size * 2 - N;
+    const size_t additional_tape_size = num_of_blocks_by_additional_tape * M;
+    // space in additional tapes that dont use
+    const size_t free_space = additional_tape_size * 2 - N;
+    // the coubt of element in last block in input
+    const size_t size_of_last_block = N - (count_of_blocks - 1) * M;
     std::array additional_tapes = {
-        input.clone(additional_tapes_size), input.clone(additional_tapes_size),
-        input.clone(additional_tapes_size), input.clone(additional_tapes_size)};
+        input.clone(additional_tape_size), input.clone(additional_tape_size),
+        input.clone(additional_tape_size), input.clone(additional_tape_size)};
     std::array tape_sizes = {static_cast<size_t>(0), static_cast<size_t>(0),
                              static_cast<size_t>(0), static_cast<size_t>(0)};
 
     local_memory.resize(M);
 
-    // sort in begin
-    for (size_t i = 0; i < N;) {
-      {
-        size_t n = std::min(M, N - i);
-        tape_copy_with_sort_n(input, *additional_tapes[0], n);
-        tape_sizes[0] += n;
-        i += n;
-      }
-      {
-        size_t n = std::min(M, N - i);
-        tape_copy_with_sort_n(input, *additional_tapes[1], n);
-        tape_sizes[1] += n;
-        i += n;
-      }
+    std::cout << "N " << N << " M " << M << " K " << K << std::endl;
+    /*
+     * sort in begin
+     */
+
+    // if num_of_blocks is even we need to put last 2 separate
+    // if num_of_blocks is odd we need to put last block separate
+    // because last block may be not full
+    const size_t count_full_block = (count_of_blocks - 1) / 2;
+    std::cout << "count_full_block " << count_of_blocks << "\ncount_full_block "
+              << count_full_block << "\nsize_of_last_block "
+              << size_of_last_block << std::endl;
+    for (size_t i = 0; i < count_full_block; ++i) {
+      tape_copy_with_sort_n(input, *additional_tapes[0], M);
+      tape_copy_with_sort_n(input, *additional_tapes[1], M);
     }
+    tape_sizes[0] += count_full_block * M;
+    tape_sizes[1] += count_full_block * M;
+    if (count_of_blocks % 2 == 0) {
+      tape_copy_with_sort_n(input, *additional_tapes[0], M);
+      tape_copy_with_sort_n(input, *additional_tapes[1], size_of_last_block);
+      tape_sizes[0] += M;
+      tape_sizes[1] += size_of_last_block;
+    } else {
+      tape_copy_with_sort_n(input, *additional_tapes[0], size_of_last_block);
+      // 0 copy elements from input
+      tape_sizes[0] += size_of_last_block;
+      tape_sizes[1] += 0;
+    }
+
+    std::cout << "tape_sizes 0" << tape_sizes[0] << "\ntape_sizes 1"
+              << tape_sizes[1] << std::endl;
     std::cout << "[\n"
               << *additional_tapes[0] << std::endl
               << *additional_tapes[1] << "\n]" << std::endl;
 
-    // merge intermediate blocks sizes
-    for (size_t k = 0; k <= K; ++k) {
+    /*
+     * merge intermediate blocks sizes
+     */
+
+    for (size_t k = 0; k < K; ++k) {
       additional_tapes[0]->to_begin();
       additional_tapes[1]->to_begin();
       additional_tapes[2]->to_begin();
       additional_tapes[3]->to_begin();
-      for (size_t i = 0; i < 1 << (K - k); ++i) {
-        {
-          size_t merge_size0 = std::min((1 << k) * M, tape_sizes[0]);
-          size_t merge_size1 = std::min((1 << k) * M, tape_sizes[1]);
-          tape_merge(*additional_tapes[0], *additional_tapes[1], merge_size0,
-                     merge_size1, *additional_tapes[2]);
-          tape_sizes[0] -= merge_size0;
-          tape_sizes[1] -= merge_size1;
-          tape_sizes[2] += merge_size0 + merge_size1;
-        }
-        {
-          size_t merge_size0 = std::min((1 << k) * M, tape_sizes[0]);
-          size_t merge_size1 = std::min((1 << k) * M, tape_sizes[1]);
 
-          tape_merge(*additional_tapes[0], *additional_tapes[1], merge_size0,
-                     merge_size1, *additional_tapes[3]);
-          tape_sizes[0] -= merge_size0;
-          tape_sizes[1] -= merge_size1;
-          tape_sizes[3] += merge_size0 + merge_size1;
-        }
+      // size of window in block
+      const size_t size_of_window = 1 << k;
+      const size_t count_of_windows =
+          (count_of_blocks + size_of_window - 1) / size_of_window;
+      // last blocks need be hanbeled
+      const size_t count_full_window = (count_of_windows - 1) / 4;
+      const size_t window_element_size = size_of_window * M;
+
+      std::cout << "size_of_window " << size_of_window << "\ncount_of_windows "
+                << count_of_windows << "\ncount_full_window "
+                << count_full_window << "\nwindow_element_size"
+                << window_element_size << std::endl;
+
+      for (size_t i = 0; i < count_full_window; ++i) {
+        tape_merge(*additional_tapes[0], *additional_tapes[1],
+                   window_element_size, window_element_size,
+                   *additional_tapes[2]);
+
+        tape_merge(*additional_tapes[0], *additional_tapes[1],
+                   window_element_size, window_element_size,
+                   *additional_tapes[3]);
       }
+      const size_t write_element_count =
+          count_full_window * window_element_size;
+      tape_sizes[0] -= 2 * write_element_count;
+      tape_sizes[1] -= 2 * write_element_count;
+      tape_sizes[2] = 2 * write_element_count;
+      tape_sizes[3] = 2 * write_element_count;
+
+      auto write_lasts_to = [&](size_t index_to) {
+        size_t size_0 = std::min(tape_sizes[0], window_element_size);
+        size_t size_1 = std::min(tape_sizes[1], window_element_size);
+        tape_merge(*additional_tapes[0], *additional_tapes[1], size_0, size_1,
+                   *additional_tapes[index_to]);
+        tape_sizes[0] -= size_0;
+        tape_sizes[1] -= size_1;
+        tape_sizes[index_to] += size_0 + size_1;
+      };
+      write_lasts_to(2);
+      write_lasts_to(3);
+
+      std::cout << *additional_tapes[0] << std::endl;
+      std::cout << *additional_tapes[1] << std::endl;
+      std::cout << *additional_tapes[2] << std::endl;
+      std::cout << *additional_tapes[3] << std::endl << std::endl;
+
       std::swap(additional_tapes[0], additional_tapes[2]);
       std::swap(additional_tapes[1], additional_tapes[3]);
       std::swap(tape_sizes[0], tape_sizes[2]);
@@ -222,7 +277,13 @@ public:
 
     additional_tapes[0]->to_begin();
     additional_tapes[1]->to_begin();
-    // final merge
+
+    /*
+     * final merge
+     */
+
+    std::cout << *additional_tapes[0] << std::endl;
+    std::cout << *additional_tapes[1] << std::endl;
     tape_merge(*additional_tapes[0], *additional_tapes[1], tape_sizes[0],
                tape_sizes[1], output);
   }
@@ -239,8 +300,8 @@ int main() {
             << config.write_time << " " << config.rewind_time << " "
             << config.shift_time << std::endl;
 
-  TapeOnVector input({6, 5, 4, 3, 2, 1});
-  TapeOnVector output(6);
+  TapeOnVector input({9, 8, 7, 6, 5, 4, 3, 2, 1});
+  TapeOnVector output(input.size());
   Sorter sorter;
   sorter.sort(input, output);
   std::cout << input << std::endl << output << std::endl;
