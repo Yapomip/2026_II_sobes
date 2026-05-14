@@ -3,12 +3,16 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <ios>
 #include <iostream>
 #include <iterator>
 #include <memory>
 #include <optional>
 #include <ostream>
+#include <random>
 #include <vector>
 
 struct Config {
@@ -17,6 +21,11 @@ struct Config {
   size_t shift_time;
   size_t rewind_time;
   size_t local_memory_limit;
+
+  size_t read_count = 0;
+  size_t write_count = 0;
+  size_t shift_count = 0;
+  size_t rewind_count = 0;
 
   static Config read_from(std::istream &input) {
     Config config;
@@ -86,6 +95,83 @@ public:
 private:
   std::vector<Integer> data;
   mutable size_t index = 0;
+};
+
+class TapeOnFileBin : public ITape {
+private:
+  void move(std::fstream::off_type n) const { pos += n; }
+  size_t get_pos() const { return pos; }
+
+  size_t get_byte_pos() const { return get_pos() * sizeof(Integer); }
+
+public:
+  TapeOnFileBin()
+      : file([]() {
+          auto tmp_path = std::filesystem::path("tmp");
+          std::filesystem::create_directories(tmp_path);
+          return std::fstream{tmp_path / std::to_string(std::random_device{}()),
+                              std::ios::out | std::ios::in | std::ios::binary |
+                                  std::ios::trunc};
+        }()) {}
+  TapeOnFileBin(size_t size) : TapeOnFileBin() {
+    for (size_t i = 0; i < size; ++i) {
+      write(0);
+      next();
+    }
+    to_begin();
+  }
+  TapeOnFileBin(std::vector<Integer> data) : TapeOnFileBin() {
+    for (size_t i = 0; i < data.size(); ++i) {
+      write(data[i]);
+      next();
+    }
+    to_begin();
+    std::cout << "bbbb " << file.fail() << file.eofbit << "\n";
+  }
+
+  Integer read() const override {
+    Integer value;
+    file.seekg(get_byte_pos(), std::ios::beg);
+    file.read(reinterpret_cast<char *>(&value), sizeof(Integer));
+    return value;
+  }
+  void write(Integer value) override {
+    file.seekp(get_byte_pos(), std::ios::beg);
+    file.write(reinterpret_cast<char *>(&value), sizeof(Integer));
+    file.flush();
+  }
+  void next() const override { move(1); }
+  void prev() const override { move(-1); }
+  void rewind_next(size_t n) const override { move(n); }
+  void rewind_prev(size_t n) const override {
+    move(-static_cast<std::fstream::off_type>(n));
+  }
+  size_t size() const override {
+    file.seekp(0, std::ios::end);
+    auto size = file.tellp();
+    return size / sizeof(Integer);
+  }
+  size_t current_index() const override { return get_pos(); }
+  std::unique_ptr<ITape> clone(size_t size) const override {
+    return std::make_unique<TapeOnFileBin>(size);
+  }
+  std::ostream &print(std::ostream &out) const override {
+    size_t pos = get_pos();
+    rewind_prev(pos);
+
+    out << "(" << size() << " : " << current_index() << ") ";
+    for (size_t i = 0; i < size(); ++i) {
+      auto d = read();
+      next();
+      out << d << " ";
+    }
+    rewind_next(pos);
+    return out;
+  }
+
+private:
+  mutable std::fstream file;
+  mutable size_t pos = 0;
 };
 
 class ISorter {
@@ -174,21 +260,17 @@ public:
         input.clone(additional_tape_size), input.clone(additional_tape_size)};
     std::array tape_sizes = {static_cast<size_t>(0), static_cast<size_t>(0),
                              static_cast<size_t>(0), static_cast<size_t>(0)};
-
     local_memory.resize(M);
 
-    std::cout << "N " << N << " M " << M << " K " << K << std::endl;
     /*
      * sort in begin
      */
+    std::cout << "Sort begin" << std::endl;
 
     // if num_of_blocks is even we need to put last 2 separate
     // if num_of_blocks is odd we need to put last block separate
     // because last block may be not full
     const size_t count_full_block = (count_of_blocks - 1) / 2;
-    std::cout << "count_full_block " << count_of_blocks << "\ncount_full_block "
-              << count_full_block << "\nsize_of_last_block "
-              << size_of_last_block << std::endl;
     for (size_t i = 0; i < count_full_block; ++i) {
       tape_copy_with_sort_n(input, *additional_tapes[0], M);
       tape_copy_with_sort_n(input, *additional_tapes[1], M);
@@ -207,15 +289,10 @@ public:
       tape_sizes[1] += 0;
     }
 
-    std::cout << "tape_sizes 0" << tape_sizes[0] << "\ntape_sizes 1"
-              << tape_sizes[1] << std::endl;
-    std::cout << "[\n"
-              << *additional_tapes[0] << std::endl
-              << *additional_tapes[1] << "\n]" << std::endl;
-
     /*
      * merge intermediate blocks sizes
      */
+    std::cout << "Sort middle" << std::endl;
 
     for (size_t k = 0; k < K; ++k) {
       additional_tapes[0]->to_begin();
@@ -230,11 +307,6 @@ public:
       // last blocks need be hanbeled
       const size_t count_full_window = (count_of_windows - 1) / 4;
       const size_t window_element_size = size_of_window * M;
-
-      std::cout << "size_of_window " << size_of_window << "\ncount_of_windows "
-                << count_of_windows << "\ncount_full_window "
-                << count_full_window << "\nwindow_element_size"
-                << window_element_size << std::endl;
 
       for (size_t i = 0; i < count_full_window; ++i) {
         tape_merge(*additional_tapes[0], *additional_tapes[1],
@@ -264,11 +336,6 @@ public:
       write_lasts_to(2);
       write_lasts_to(3);
 
-      std::cout << *additional_tapes[0] << std::endl;
-      std::cout << *additional_tapes[1] << std::endl;
-      std::cout << *additional_tapes[2] << std::endl;
-      std::cout << *additional_tapes[3] << std::endl << std::endl;
-
       std::swap(additional_tapes[0], additional_tapes[2]);
       std::swap(additional_tapes[1], additional_tapes[3]);
       std::swap(tape_sizes[0], tape_sizes[2]);
@@ -281,9 +348,8 @@ public:
     /*
      * final merge
      */
+    std::cout << "Sort end" << std::endl;
 
-    std::cout << *additional_tapes[0] << std::endl;
-    std::cout << *additional_tapes[1] << std::endl;
     tape_merge(*additional_tapes[0], *additional_tapes[1], tape_sizes[0],
                tape_sizes[1], output);
   }
@@ -300,8 +366,8 @@ int main() {
             << config.write_time << " " << config.rewind_time << " "
             << config.shift_time << std::endl;
 
-  TapeOnVector input({9, 8, 7, 6, 5, 4, 3, 2, 1});
-  TapeOnVector output(input.size());
+  TapeOnFileBin input({9, 8, 7, 6, 5, 4, 3, 2, 1});
+  TapeOnFileBin output(input.size());
   Sorter sorter;
   sorter.sort(input, output);
   std::cout << input << std::endl << output << std::endl;
