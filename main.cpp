@@ -15,7 +15,10 @@
 #include <ostream>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
+
+using Integer = int;
 
 struct Config {
   size_t read_time;
@@ -29,15 +32,23 @@ struct Config {
   size_t shift_count = 0;
   size_t rewind_count = 0;
 
+  std::optional<std::vector<Integer>> data;
+
   static Config read_from(std::istream &input) {
     Config config;
     input >> config.read_time >> config.write_time >> config.shift_time >>
         config.rewind_time >> config.local_memory_limit;
+    size_t size;
+    if (input >> size) {
+      std::vector<Integer> data(size);
+      for (auto &element : data) {
+        input >> element;
+      }
+      config.data = data;
+    }
     return config;
   }
 } config;
-
-using Integer = int;
 
 class ITape {
 public:
@@ -106,15 +117,23 @@ private:
 
   size_t get_byte_pos() const { return get_pos() * sizeof(Integer); }
 
+  static std::fstream create_file() {
+    auto tmp_path = std::filesystem::path("tmp");
+    std::filesystem::create_directories(tmp_path);
+
+    for (size_t k = 0; k < 10; ++k) {
+      std::fstream file{tmp_path / std::to_string(std::random_device{}()),
+                        std::ios::out | std::ios::in | std::ios::binary |
+                            std::ios::trunc};
+      if (file.is_open()) {
+        return file;
+      }
+    }
+    throw std::runtime_error("Cannot create file");
+  }
+
 public:
-  TapeOnFileBin()
-      : file([]() {
-          auto tmp_path = std::filesystem::path("tmp");
-          std::filesystem::create_directories(tmp_path);
-          return std::fstream{tmp_path / std::to_string(std::random_device{}()),
-                              std::ios::out | std::ios::in | std::ios::binary |
-                                  std::ios::trunc};
-        }()) {}
+  TapeOnFileBin() : file(create_file()) {}
   TapeOnFileBin(size_t size) : TapeOnFileBin() {
     for (size_t i = 0; i < size; ++i) {
       write(0);
@@ -128,7 +147,6 @@ public:
       next();
     }
     to_begin();
-    std::cout << "bbbb " << file.fail() << file.eofbit << "\n";
   }
 
   Integer read() const override {
@@ -179,48 +197,75 @@ private:
 template <typename Base> class TapeWithStatistic : public Base {
 public:
   template <typename... Args>
-  TapeWithStatistic(Args &&...args) : Base({std::forward<Args>(args)...}) {}
+  TapeWithStatistic(Args &&...args) : Base(std::forward<Args>(args)...) {}
+  template <typename T>
+  TapeWithStatistic(std::initializer_list<T> list) : Base(list) {}
 
   Integer read() const override {
-    config.read_count += 1;
+    if (is_stats_collecting) {
+      config.read_count += 1;
+    }
     return Base::read();
   }
   void write(Integer value) override {
-    config.write_count += 1;
+    if (is_stats_collecting) {
+      config.write_count += 1;
+    }
     Base::write(value);
   }
   void next() const override {
-    config.shift_count += 1;
+    if (is_stats_collecting) {
+      config.shift_count += 1;
+    }
     Base::next();
   }
   void prev() const override {
-    config.shift_count += 1;
+    if (is_stats_collecting) {
+      config.shift_count += 1;
+    }
     Base::prev();
   }
   void rewind_next(size_t n) const override {
-    config.rewind_count += 1;
+    if (is_stats_collecting) {
+      config.rewind_count += 1;
+    }
     Base::rewind_next(n);
   }
   void rewind_prev(size_t n) const override {
-    config.rewind_count += 1;
+    if (is_stats_collecting) {
+      config.rewind_count += 1;
+    }
     Base::rewind_prev(n);
   }
   std::unique_ptr<ITape> clone(size_t size) const override {
     return std::make_unique<TapeWithStatistic<Base>>(size);
   }
   std::ostream &print(std::ostream &out) const override {
+    is_stats_collecting = false;
+
+    auto all_read_time = config.read_count * config.read_time;
+    auto all_write_time = config.write_count * config.write_count;
+    auto all_shit_time = config.shift_count * config.shift_time;
+    auto all_rewind_time = config.rewind_count * config.rewind_time;
     return Base::print(out)
            << std::endl
            << "Stats: " << std::endl
-           << "read: count " << config.read_count << ", time "
-           << config.read_count * config.read_time << std::endl
+           << "read: count " << config.read_count << ", time " << all_read_time
+           << std::endl
            << "write: count " << config.write_count << ", time "
-           << config.write_count * config.write_time << std::endl
+           << all_write_time << std::endl
            << "shift: count " << config.shift_count << ", time "
-           << config.shift_count * config.write_time << std::endl
+           << all_shit_time << std::endl
            << "rewind: count " << config.rewind_count << ", time "
-           << config.rewind_count * config.rewind_time;
+           << all_rewind_time << std::endl
+           << "all time "
+           << all_read_time + all_write_time + all_shit_time + all_rewind_time;
+
+    is_stats_collecting = true;
   }
+
+private:
+  mutable bool is_stats_collecting = true;
 };
 
 class ISorter {
@@ -411,9 +456,11 @@ int main() {
             << config.write_time << " " << config.rewind_time << " "
             << config.shift_time << std::endl;
 
-  using Tape = TapeWithStatistic<TapeOnVector>;
-  Tape input({9, 8, 7, 6, 5, 4, 3, 2, 1});
-  Tape output(input.size());
+  using Tape = TapeOnVector;
+
+  TapeWithStatistic<Tape> input(
+      config.data.value_or<std::vector<Integer>>({9, 8, 7, 6, 5, 4, 3, 2, 1}));
+  TapeWithStatistic<Tape> output(input.size());
   Sorter sorter;
   sorter.sort(input, output);
   std::cout << input << std::endl << output << std::endl;
