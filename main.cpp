@@ -9,10 +9,12 @@
 #include <ios>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <ostream>
 #include <random>
+#include <sstream>
 #include <vector>
 
 struct Config {
@@ -71,7 +73,7 @@ std::ostream &operator<<(std::ostream &out, const ITape &tape) {
 class TapeOnVector : public ITape {
 public:
   TapeOnVector(size_t size) : data(size) {}
-  TapeOnVector(std::vector<Integer> data) : data(data) {}
+  TapeOnVector(std::vector<Integer> data) : data(std::move(data)) {}
 
   Integer read() const override { return data[index]; }
   void write(Integer value) override { data[index] = value; }
@@ -174,6 +176,53 @@ private:
   mutable size_t pos = 0;
 };
 
+template <typename Base> class TapeWithStatistic : public Base {
+public:
+  template <typename... Args>
+  TapeWithStatistic(Args &&...args) : Base({std::forward<Args>(args)...}) {}
+
+  Integer read() const override {
+    config.read_count += 1;
+    return Base::read();
+  }
+  void write(Integer value) override {
+    config.write_count += 1;
+    Base::write(value);
+  }
+  void next() const override {
+    config.shift_count += 1;
+    Base::next();
+  }
+  void prev() const override {
+    config.shift_count += 1;
+    Base::prev();
+  }
+  void rewind_next(size_t n) const override {
+    config.rewind_count += 1;
+    Base::rewind_next(n);
+  }
+  void rewind_prev(size_t n) const override {
+    config.rewind_count += 1;
+    Base::rewind_prev(n);
+  }
+  std::unique_ptr<ITape> clone(size_t size) const override {
+    return std::make_unique<TapeWithStatistic<Base>>(size);
+  }
+  std::ostream &print(std::ostream &out) const override {
+    return Base::print(out)
+           << std::endl
+           << "Stats: " << std::endl
+           << "read: count " << config.read_count << ", time "
+           << config.read_count * config.read_time << std::endl
+           << "write: count " << config.write_count << ", time "
+           << config.write_count * config.write_time << std::endl
+           << "shift: count " << config.shift_count << ", time "
+           << config.shift_count * config.write_time << std::endl
+           << "rewind: count " << config.rewind_count << ", time "
+           << config.rewind_count * config.rewind_time;
+  }
+};
+
 class ISorter {
 public:
   virtual void sort(const ITape &input, ITape &output) const = 0;
@@ -265,7 +314,6 @@ public:
     /*
      * sort in begin
      */
-    std::cout << "Sort begin" << std::endl;
 
     // if num_of_blocks is even we need to put last 2 separate
     // if num_of_blocks is odd we need to put last block separate
@@ -292,7 +340,6 @@ public:
     /*
      * merge intermediate blocks sizes
      */
-    std::cout << "Sort middle" << std::endl;
 
     for (size_t k = 0; k < K; ++k) {
       additional_tapes[0]->to_begin();
@@ -348,8 +395,6 @@ public:
     /*
      * final merge
      */
-    std::cout << "Sort end" << std::endl;
-
     tape_merge(*additional_tapes[0], *additional_tapes[1], tape_sizes[0],
                tape_sizes[1], output);
   }
@@ -366,8 +411,9 @@ int main() {
             << config.write_time << " " << config.rewind_time << " "
             << config.shift_time << std::endl;
 
-  TapeOnFileBin input({9, 8, 7, 6, 5, 4, 3, 2, 1});
-  TapeOnFileBin output(input.size());
+  using Tape = TapeWithStatistic<TapeOnVector>;
+  Tape input({9, 8, 7, 6, 5, 4, 3, 2, 1});
+  Tape output(input.size());
   Sorter sorter;
   sorter.sort(input, output);
   std::cout << input << std::endl << output << std::endl;
